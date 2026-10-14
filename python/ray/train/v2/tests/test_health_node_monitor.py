@@ -36,6 +36,19 @@ class Counter(NodeProbe):
         return ProbeResult(metrics={"runs": float(self.runs)})
 
 
+class Durations(NodeProbe):
+    """Sleeps for the next of the given durations on each run."""
+
+    def __init__(self, *seconds):
+        self.seconds = list(seconds)
+        self.runs = 0
+
+    def poll(self):
+        time.sleep(self.seconds[self.runs])
+        self.runs += 1
+        return ProbeResult(metrics={"runs": float(self.runs)})
+
+
 class Hang(NodeProbe):
     def __init__(self):
         self.runs = 0
@@ -95,6 +108,37 @@ def test_a_probe_still_running_when_asked_again_is_reported_and_not_restarted():
     assert isinstance(second.probe_errors["Hang"], TimeoutError)
     assert second.probe_results["Temp"].metrics == {"temp_c": 60.0}
     assert hang.runs == 1
+
+
+class Slow(Counter):
+    def __init__(self):
+        super().__init__(seconds=0.6)
+
+
+def test_a_running_probe_that_finishes_during_the_wait_is_not_reported():
+    monitor = NodeMonitor([Counter(seconds=0.3), Slow()])
+    assert monitor.poll_status(["Counter"], timeout_s=0.05).probe_results == {}
+
+    # Waiting for Slow, which this poll starts, gives Counter time to finish.
+    status = monitor.poll_status(["Counter", "Slow"], timeout_s=5)
+    assert status.probe_results["Counter"].metrics == {"runs": 1.0}
+    assert status.probe_errors == {}
+
+
+def test_only_the_latest_run_of_a_probe_is_returned():
+    probe = Durations(0.3, 0.0)
+    monitor = NodeMonitor([probe])
+    monitor.poll_status(["Durations"], timeout_s=0.05)
+    _wait_for(lambda: probe.runs == 1)
+
+    status = monitor.poll_status(["Durations"], timeout_s=5)
+    assert status.probe_results["Durations"].metrics == {"runs": 2.0}
+
+
+def test_the_poll_timeout_must_be_less_than_the_health_check_timeout():
+    group = NodeMonitorGroup([], health_check_timeout_s=3.0)
+    with pytest.raises(ValueError, match="health_check_timeout_s"):
+        group.poll_status([], timeout=3.0)
 
 
 def _local_node_id():

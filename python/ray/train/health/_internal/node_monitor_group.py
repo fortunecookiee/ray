@@ -110,7 +110,15 @@ class NodeMonitorGroup:
 
         Returns:
             The status of every monitor.
+
+        Raises:
+            ValueError: If ``timeout`` is not less than ``health_check_timeout_s``.
         """
+        if timeout >= self._health_check_timeout_s:
+            raise ValueError(
+                f"timeout ({timeout}) must be less than health_check_timeout_s "
+                f"({self._health_check_timeout_s})."
+            )
         start_time = time.monotonic()
         for node_id, monitor in self._monitors.items():
             if node_id not in self._ongoing_polls:

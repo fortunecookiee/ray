@@ -14,8 +14,8 @@ class NodeMonitorStatus:
         probe_results: ``{probe name: ProbeResult}`` for the probes that
             finished since the last poll.
         probe_errors: ``{probe name: exception}`` for the probes that raised
-            since the last poll, or that were asked for again while still
-            running.
+            since the last poll, or that are still running from an earlier
+            poll.
         error: An error reaching the monitor, if any.
     """
 
@@ -44,8 +44,9 @@ class NodeMonitor:
         """Start the given probes, wait up to ``timeout_s`` for them to finish,
         and return the results of the probes that finished since the last poll.
 
-        A probe that is still running from an earlier poll is not started again;
-        it is reported as an error instead.
+        Each probe gets at most one entry, for its latest run. A probe that is
+        still running from an earlier poll is not started again; if it is
+        still running after the wait, it is reported as an error.
 
         Args:
             probe_names: The probes to start.
@@ -54,23 +55,16 @@ class NodeMonitor:
         Returns:
             The results and errors since the last poll.
         """
-        threads = []
         with self._lock:
-            for name in probe_names:
-                if name in self._running:
-                    self._errors[name] = TimeoutError(
-                        f"Node probe {name} is still running from an earlier poll."
-                    )
-                    continue
-                self._running.add(name)
-                threads.append(
-                    threading.Thread(
-                        target=self._run,
-                        args=(name,),
-                        name=f"NodeMonitor-{name}",
-                        daemon=True,
-                    )
-                )
+            already_running = [name for name in probe_names if name in self._running]
+            to_start = [name for name in probe_names if name not in self._running]
+            self._running.update(to_start)
+        threads = [
+            threading.Thread(
+                target=self._run, args=(name,), name=f"NodeMonitor-{name}", daemon=True
+            )
+            for name in to_start
+        ]
         for thread in threads:
             thread.start()
 
@@ -83,6 +77,11 @@ class NodeMonitor:
                 probe_results=self._results, probe_errors=self._errors
             )
             self._results, self._errors = {}, {}
+            for name in already_running:
+                if name in self._running and name not in status.probe_results:
+                    status.probe_errors[name] = TimeoutError(
+                        f"Node probe {name} is still running from an earlier poll."
+                    )
         return status
 
     def _run(self, name: str) -> None:
@@ -93,11 +92,13 @@ class NodeMonitor:
             result = self._probes[name].poll()
         except Exception as e:
             with self._lock:
+                self._results.pop(name, None)
                 self._errors[name] = e
                 self._running.discard(name)
             return
         if result.timestamp_s is None:
             result = replace(result, timestamp_s=time.time())
         with self._lock:
+            self._errors.pop(name, None)
             self._results[name] = result
             self._running.discard(name)
