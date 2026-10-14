@@ -40,7 +40,7 @@ class NodeMonitorGroup:
     """One ``NodeMonitor`` actor on each of a set of nodes.
 
     Args:
-        probes: The ``NodeProbe``\\ s every monitor samples.
+        probes: The ``NodeProbe``\\ s every monitor can run.
         health_check_timeout_s: How long a monitor's ``poll_status()`` may stay
             unanswered before it is reported as an error.
     """
@@ -90,17 +90,22 @@ class NodeMonitorGroup:
             self._ongoing_polls.pop(node_id, None)
 
     def poll_status(
-        self, timeout: float = DEFAULT_NODE_MONITOR_POLL_TIMEOUT_S
+        self,
+        probe_names: List[str],
+        timeout: float = DEFAULT_NODE_MONITOR_POLL_TIMEOUT_S,
     ) -> NodeMonitorGroupPollStatus:
-        """Get the latest samples from every monitor.
+        """Ask every monitor to start some probes, and collect the results its
+        probes finished since its last poll.
 
-        A monitor that does not answer within ``timeout`` is not polled again
+        Each monitor waits up to ``timeout`` for the probes it starts. A
+        monitor that does not answer within ``timeout`` is not polled again
         until it answers. Once it has been unanswered for longer than
         ``health_check_timeout_s``, its status carries a ``TimeoutError``. A
         monitor whose poll failed, for example because it died, carries the
         failure.
 
         Args:
+            probe_names: The probes to start. Empty to only collect results.
             timeout: The maximum time to wait for the monitors to answer.
 
         Returns:
@@ -110,7 +115,7 @@ class NodeMonitorGroup:
         for node_id, monitor in self._monitors.items():
             if node_id not in self._ongoing_polls:
                 self._ongoing_polls[node_id] = _OngoingPoll(
-                    start_time, monitor.poll_status.remote()
+                    start_time, monitor.poll_status.remote(probe_names, timeout)
                 )
         if not self._ongoing_polls:
             return NodeMonitorGroupPollStatus(node_monitor_statuses={})
